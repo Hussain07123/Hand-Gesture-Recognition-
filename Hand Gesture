@@ -1,0 +1,115 @@
+import cv2
+import mediapipe as mp
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+import time
+
+# Spotify API Setup
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+    client_id="2df2490f94b8416aa286fc62d3ca5798",          # Replace with your Spotify API credentials
+    client_secret="cf9519abded5474fa093b27265543cac",  # Get these from Spotify Developer Dashboard
+    redirect_uri="https://localhost:8888/callback",
+    scope="user-modify-playback-state"
+))
+
+# Hand Tracking Setup
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+mp_draw = mp.solutions.drawing_utils
+
+# Gesture Cooldown
+last_gesture_time = 0
+cooldown = 1.0  # seconds
+
+def detect_gesture(hand_landmarks):
+    fingers_up = []
+    
+    # Thumb (Right Hand)
+    thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+    thumb_ip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP]
+    if thumb_tip.x < thumb_ip.x:
+        fingers_up.append(1)  # Thumb up
+    else:
+        fingers_up.append(0)
+    
+    # Other fingers
+    finger_pairs = [
+        (mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.INDEX_FINGER_PIP),
+        (mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_PIP),
+        (mp_hands.HandLandmark.RING_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_PIP),
+        (mp_hands.HandLandmark.PINKY_TIP, mp_hands.HandLandmark.PINKY_PIP)
+    ]
+    
+    for tip, pip in finger_pairs:
+        if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y:
+            fingers_up.append(1)  # Finger up
+        else:
+            fingers_up.append(0)
+    
+    # Gesture Mapping
+    if sum(fingers_up) == 5:          # Open palm
+        return "play_pause"
+    elif fingers_up[0] == 1 and sum(fingers_up[1:]) == 0:  # Thumb up
+        return "volume_up"
+    elif fingers_up[0] == 0 and sum(fingers_up[1:]) == 0:  # Thumb down
+        return "volume_down"
+    elif fingers_up[:2] == [1,1] and sum(fingers_up[2:]) == 0:  # Peace sign
+        return "next_track"
+    else:
+        return None
+
+# Main Loop
+cap = cv2.VideoCapture(0)
+while cap.isOpened():
+    success, img = cap.read()
+    if not success:
+        continue
+    
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = hands.process(img_rgb)
+    
+    current_time = time.time()
+    
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            mp_draw.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            
+            if current_time - last_gesture_time > cooldown:
+                gesture = detect_gesture(hand_landmarks)
+                
+                if gesture == "play_pause":
+                    try:
+                        sp.start_playback()  # Toggle play/pause
+                        print("▶️ Play/Pause")
+                    except:
+                        print("⚠️ No active Spotify device")
+                    last_gesture_time = current_time
+                
+                elif gesture == "volume_up":
+                    sp.volume(100)  # Set to max volume
+                    print("🔊 Volume Up")
+                    last_gesture_time = current_time
+                
+                elif gesture == "volume_down":
+                    sp.volume(30)   # Set to low volume
+                    print("🔈 Volume Down")
+                    last_gesture_time = current_time
+                
+                elif gesture == "next_track":
+                    sp.next_track()
+                    print("⏭ Next Track")
+                    last_gesture_time = current_time
+    
+    # Display UI
+    cv2.putText(img, "Gesture Controls:", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(img, "Open Palm: Play/Pause", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.putText(img, "Thumb Up: Volume Up", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.putText(img, "Thumb Down: Volume Down", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.putText(img, "Peace Sign: Next Track", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    
+    cv2.imshow("Spotify Hand Controller", img)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
